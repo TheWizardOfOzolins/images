@@ -62,6 +62,16 @@ jobs:
           echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
           echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
 
+      - name: Log in to Red Hat Registry
+        if: env.REDHAT_USERNAME != ''
+        uses: redhat-actions/podman-login@v1
+        env:
+          REDHAT_USERNAME: ${{ secrets.REDHAT_USERNAME }}
+        with:
+          registry: registry.redhat.io
+          username: ${{ secrets.REDHAT_USERNAME }}
+          password: ${{ secrets.REDHAT_PASSWORD }}
+
       - name: Build image with Buildah
         id: build
         uses: redhat-actions/buildah-build@v2
