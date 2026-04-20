@@ -1,0 +1,88 @@
+name: Build Container Images
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      containers: ${{ steps.find-containers.outputs.containers }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Find changed containers
+        id: find-containers
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+            CHANGED_FILES=$(git diff --name-only "$BASE" HEAD)
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            CHANGED_FILES=$(git ls-files)
+          else
+            CHANGED_FILES=$(git diff --name-only "${{ github.event.before }}" HEAD)
+          fi
+
+          CONTAINERS=$(echo "$CHANGED_FILES" \
+            | grep -E '^[^/]+/[Cc]ontainerfile$' \
+            | sed 's|/[Cc]ontainerfile$||' \
+            | sort -u \
+            | jq -R -s -c 'split("\n") | map(select(length > 0))')
+
+          echo "containers=$CONTAINERS" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.containers != '[]' && needs.detect-changes.outputs.containers != ''
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        container: ${{ fromJson(needs.detect-changes.outputs.containers) }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute image tags
+        id: tags
+        run: |
+          SHORT_SHA="${GITHUB_SHA::7}"
+          IMAGE="ghcr.io/${{ github.repository_owner }}/${{ matrix.container }}"
+          TAGS="${IMAGE}:${SHORT_SHA}"
+          if [ "${{ github.event_name }}" = "push" ]; then
+            TAGS="${TAGS} ${IMAGE}:latest"
+          fi
+          echo "tags=$TAGS" >> "$GITHUB_OUTPUT"
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+
+      - name: Build image with Buildah
+        id: build
+        uses: redhat-actions/buildah-build@v2
+        with:
+          context: ${{ matrix.container }}
+          containerfiles: ${{ matrix.container }}/Containerfile
+          image: ${{ steps.tags.outputs.image }}
+          tags: ${{ steps.tags.outputs.tags }}
+          oci: true
+
+      - name: Log in to GitHub Container Registry
+        if: github.event_name == 'push'
+        uses: redhat-actions/podman-login@v1
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push to GHCR
+        if: github.event_name == 'push'
+        uses: redhat-actions/push-to-registry@v2
+        with:
+          image: ${{ steps.build.outputs.image }}
+          tags: ${{ steps.build.outputs.tags }}
