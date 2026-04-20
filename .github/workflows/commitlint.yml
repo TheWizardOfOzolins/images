@@ -14,6 +14,28 @@ jobs:
         with:
           fetch-depth: 0
 
-      - uses: wagoid/commitlint-github-action@v6
-        with:
-          configFile: commitlint.config.js
+      - name: Validate commit messages
+        run: |
+          chmod +x .githooks/commit-msg
+
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            BASE="${{ github.event.pull_request.base.sha }}"
+          elif [ "${{ github.event.before }}" = "0000000000000000000000000000000000000000" ]; then
+            BASE=$(git rev-list --max-parents=0 HEAD)
+          else
+            BASE="${{ github.event.before }}"
+          fi
+
+          FAILED=0
+          while IFS= read -r sha; do
+            MSG=$(git log -1 --format="%s" "$sha")
+            TMPFILE=$(mktemp)
+            echo "$MSG" > "$TMPFILE"
+            if ! .githooks/commit-msg "$TMPFILE"; then
+              echo "  (commit: $sha)"
+              FAILED=1
+            fi
+            rm "$TMPFILE"
+          done < <(git log --format="%H" "$BASE"..HEAD)
+
+          exit $FAILED
